@@ -1,6 +1,6 @@
 // --- API Helper Functions ---
 
-// UPGRADED: Now fetches up to 500 links, unlocking massive "Hub Nodes"
+// 1. Forward Search: Gets links ON the current page
 async function fetchLinks(pageTitle) {
     const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=links&pllimit=500&format=json&origin=*`;
     try {
@@ -8,16 +8,25 @@ async function fetchLinks(pageTitle) {
         const data = await response.json();
         const pages = data.query.pages;
         const pageId = Object.keys(pages)[0];
-        
         if (!pages[pageId].links) return [];
-        // Filter out non-article namespaces (Talk:, Category:, File:, etc.)
         return pages[pageId].links.filter(link => link.ns === 0).map(link => link.title);
-    } catch (e) {
-        return [];
-    }
+    } catch (e) { return []; }
 }
 
-// Fetches the summary and image for the final result cards
+// 2. Backward Search: Gets pages that link TO the current page
+async function fetchBacklinks(pageTitle) {
+    const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=linkshere&lhlimit=500&format=json&origin=*`;
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        const pages = data.query.pages;
+        const pageId = Object.keys(pages)[0];
+        if (!pages[pageId].linkshere) return [];
+        return pages[pageId].linkshere.filter(link => link.ns === 0).map(link => link.title);
+    } catch (e) { return []; }
+}
+
+// 3. UI Data Fetcher
 async function fetchPageDetails(pageTitle) {
     const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=pageimages|extracts&exintro&explaintext&pithumbsize=200&format=json&origin=*`;
     try {
@@ -26,18 +35,15 @@ async function fetchPageDetails(pageTitle) {
         const pages = data.query.pages;
         const pageId = Object.keys(pages)[0];
         const page = pages[pageId];
-        
         return {
             title: page.title,
             summary: page.extract ? page.extract.substring(0, 120) + '...' : 'No summary available.',
             image: page.thumbnail ? page.thumbnail.source : 'https://upload.wikimedia.org/wikipedia/commons/8/80/Wikipedia-logo-v2.svg'
         };
-    } catch (e) {
-        return { title: pageTitle, summary: 'Error fetching details.', image: '' };
-    }
+    } catch (e) { return { title: pageTitle, summary: 'Error fetching details.', image: '' }; }
 }
 
-// --- Optimized BFS Algorithm ---
+// --- Core Bidirectional BFS Algorithm ---
 
 async function runSolver() {
     const startInput = document.getElementById('start').value.trim();
@@ -48,90 +54,119 @@ async function runSolver() {
 
     if (!startInput || !targetInput) return alert("Please enter both pages.");
 
-    // UI Reset
+    // Reset UI
     btn.disabled = true;
-    btn.innerText = "Searching...";
+    btn.innerText = "Searching Both Ends...";
     results.innerHTML = '';
     ticker.style.display = 'block';
-    ticker.innerText = `Initializing search from "${startInput}"...`;
 
-    let queue = [startInput];
-    let visited = new Set([startInput.toLowerCase()]);
-    let parentMap = {};
-    
-    let pagesExplored = 0;
-    const MAX_PAGES = 300; // Lower safety limit because each page now brings in 500 links!
-
-    let found = false;
-    let actualTargetName = targetInput;
-
-    // Direct match check right at the start
     if (startInput.toLowerCase() === targetInput.toLowerCase()) {
         ticker.innerText = `You started at the destination!`;
-        await renderPath({}, startInput, startInput);
+        await renderPath([startInput]);
         btn.disabled = false;
         btn.innerText = "Solve";
         return;
     }
 
-    while (queue.length > 0 && pagesExplored < MAX_PAGES) {
-        let currentPage = queue.shift();
-        pagesExplored++;
+    // Set up our two parallel search queues
+    let fwdQueue = [startInput];
+    let bwdQueue = [targetInput];
 
-        ticker.innerText = `[Explored: ${pagesExplored} pages | Queue Size: ${queue.length}] Scanning: ${currentPage}...`;
+    // Parent maps: Key is the page (lowercase), Value is where it came from
+    let fwdParents = { [startInput.toLowerCase()]: null };
+    let bwdParents = { [targetInput.toLowerCase()]: null };
+    
+    let pagesExplored = 0;
+    const MAX_PAGES = 400; // 200 forward, 200 backward
+    let intersectionNode = null;
 
-        // Fetch up to 500 neighbors
-        let neighbors = await fetchLinks(currentPage);
+    // Take turns expanding one node forward, then one node backward
+    while (fwdQueue.length > 0 && bwdQueue.length > 0 && pagesExplored < MAX_PAGES) {
         
-        for (let neighbor of neighbors) {
-            let neighborLower = neighbor.toLowerCase();
-            if (!visited.has(neighborLower)) {
-                visited.add(neighborLower);
-                parentMap[neighborLower] = currentPage; // Map lowercase child to exact parent string
+        // --- STEP 1: Expand Forward ---
+        let fwdCurrent = fwdQueue.shift();
+        pagesExplored++;
+        ticker.innerText = `[Page ${pagesExplored}] Forward scanning: ${fwdCurrent}...`;
+        
+        let fwdNeighbors = await fetchLinks(fwdCurrent);
+        for (let neighbor of fwdNeighbors) {
+            let lower = neighbor.toLowerCase();
+            if (!(lower in fwdParents)) {
+                fwdParents[lower] = fwdCurrent;
                 
-                // OPTIMIZATION: Look-ahead verification. Check matches *before* enqueueing.
-                if (neighborLower === targetInput.toLowerCase()) {
-                    found = true;
-                    actualTargetName = neighbor; // Capture Wikipedia's exact casing
-                    ticker.innerText = `Target found! Mapping path...`;
-                    queue = []; 
+                // Did we collide with the backward search?
+                if (lower in bwdParents) {
+                    intersectionNode = neighbor;
                     break;
                 }
-                queue.push(neighbor);
+                fwdQueue.push(neighbor);
             }
         }
-        if (found) break;
+        if (intersectionNode) break; // Collision found! Stop searching.
+
+        // --- STEP 2: Expand Backward ---
+        let bwdCurrent = bwdQueue.shift();
+        pagesExplored++;
+        ticker.innerText = `[Page ${pagesExplored}] Backward scanning: ${bwdCurrent}...`;
+        
+        let bwdNeighbors = await fetchBacklinks(bwdCurrent);
+        for (let neighbor of bwdNeighbors) {
+            let lower = neighbor.toLowerCase();
+            if (!(lower in bwdParents)) {
+                bwdParents[lower] = bwdCurrent;
+                
+                // Did we collide with the forward search?
+                if (lower in fwdParents) {
+                    intersectionNode = neighbor;
+                    break;
+                }
+                bwdQueue.push(neighbor);
+            }
+        }
+        if (intersectionNode) break; // Collision found! Stop searching.
     }
 
-    if (!found) {
-        ticker.innerText = `Search stopped. Could not find a path within ${pagesExplored} page scans. Try closer concepts!`;
+    if (!intersectionNode) {
+        ticker.innerText = `Search stopped. Could not bridge the gap within ${MAX_PAGES} total scans.`;
     } else {
-        ticker.innerText = `Success! Path found after scanning ${pagesExplored} pages.`;
-        await renderPath(parentMap, startInput, actualTargetName);
+        ticker.innerText = `Collision detected at "${intersectionNode}"! Reconstructing path...`;
+        await buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode);
+        ticker.innerText = `Success! Path connected after scanning ${pagesExplored} pages.`;
     }
 
     btn.disabled = false;
     btn.innerText = "Solve";
 }
 
-// --- UI Rendering ---
+// --- Path Reconstruction & Rendering ---
 
-async function renderPath(parentMap, start, target) {
+async function buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode) {
     const resultsContainer = document.getElementById('results');
-    let path = [];
-    let current = target;
-
-    // Backtrack using our lowercase-optimized parent map
-    while (current && current.toLowerCase() !== start.toLowerCase()) {
-        path.push(current);
-        current = parentMap[current.toLowerCase()];
+    
+    // 1. Build path from Start to Intersection
+    let fwdPath = [];
+    let curr = intersectionNode;
+    while (curr) {
+        fwdPath.push(curr);
+        curr = fwdParents[curr.toLowerCase()];
     }
-    path.push(start);
-    path.reverse(); 
+    fwdPath.reverse(); // Flip it so it goes Start -> Intersection
 
-    // Render Clean UI Timeline Cards
-    for (let i = 0; i < path.length; i++) {
-        let details = await fetchPageDetails(path[i]);
+    // 2. Build path from Intersection to Target
+    let bwdPath = [];
+    // Skip the intersection node itself since it's already at the end of the fwdPath
+    curr = bwdParents[intersectionNode.toLowerCase()]; 
+    while (curr) {
+        bwdPath.push(curr);
+        curr = bwdParents[curr.toLowerCase()];
+    }
+
+    // Combine them
+    const finalPath = [...fwdPath, ...bwdPath];
+
+    // Render Cards (Wikipedia API automatically fixes any casing issues!)
+    for (let i = 0; i < finalPath.length; i++) {
+        let details = await fetchPageDetails(finalPath[i]);
         
         let cardHTML = `
             <div class="card">
@@ -144,8 +179,7 @@ async function renderPath(parentMap, start, target) {
         `;
         
         resultsContainer.innerHTML += cardHTML;
-
-        if (i < path.length - 1) {
+        if (i < finalPath.length - 1) {
             resultsContainer.innerHTML += `<div class="arrow">↓</div>`;
         }
     }
