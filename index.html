@@ -1,6 +1,6 @@
-// --- API Helper Functions ---
+/* API Helper Functions */
 
-// 1. Forward Search: Gets links ON the current page
+/* Forward Search */
 async function fetchLinks(pageTitle) {
     const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=links&pllimit=500&format=json&origin=*`;
     try {
@@ -13,7 +13,7 @@ async function fetchLinks(pageTitle) {
     } catch (e) { return []; }
 }
 
-// 2. Backward Search: Gets pages that link TO the current page
+/* Backward Search */
 async function fetchBacklinks(pageTitle) {
     const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=linkshere&lhlimit=500&format=json&origin=*`;
     try {
@@ -26,7 +26,7 @@ async function fetchBacklinks(pageTitle) {
     } catch (e) { return []; }
 }
 
-// 3. UI Data Fetcher
+/* UI Data Fetcher */
 async function fetchPageDetails(pageTitle) {
     const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=pageimages|extracts&exintro&explaintext&pithumbsize=200&format=json&origin=*`;
     try {
@@ -43,8 +43,7 @@ async function fetchPageDetails(pageTitle) {
     } catch (e) { return { title: pageTitle, summary: 'Error fetching details.', image: '' }; }
 }
 
-// --- Core Bidirectional BFS Algorithm ---
-
+/* Core Bidirectional BFS Algorithm */
 async function runSolver() {
     const startInput = document.getElementById('start').value.trim();
     const targetInput = document.getElementById('target').value.trim();
@@ -54,7 +53,6 @@ async function runSolver() {
 
     if (!startInput || !targetInput) return alert("Please enter both pages.");
 
-    // Reset UI
     btn.disabled = true;
     btn.innerText = "Searching Both Ends...";
     results.innerHTML = '';
@@ -68,22 +66,17 @@ async function runSolver() {
         return;
     }
 
-    // Set up our two parallel search queues
     let fwdQueue = [startInput];
     let bwdQueue = [targetInput];
-
-    // Parent maps: Key is the page (lowercase), Value is where it came from
     let fwdParents = { [startInput.toLowerCase()]: null };
     let bwdParents = { [targetInput.toLowerCase()]: null };
     
     let pagesExplored = 0;
-    const MAX_PAGES = 400; // 200 forward, 200 backward
+    const MAX_PAGES = 400;
     let intersectionNode = null;
 
-    // Take turns expanding one node forward, then one node backward
     while (fwdQueue.length > 0 && bwdQueue.length > 0 && pagesExplored < MAX_PAGES) {
         
-        // --- STEP 1: Expand Forward ---
         let fwdCurrent = fwdQueue.shift();
         pagesExplored++;
         ticker.innerText = `[Page ${pagesExplored}] Forward scanning: ${fwdCurrent}...`;
@@ -93,8 +86,6 @@ async function runSolver() {
             let lower = neighbor.toLowerCase();
             if (!(lower in fwdParents)) {
                 fwdParents[lower] = fwdCurrent;
-                
-                // Did we collide with the backward search?
                 if (lower in bwdParents) {
                     intersectionNode = neighbor;
                     break;
@@ -102,9 +93,8 @@ async function runSolver() {
                 fwdQueue.push(neighbor);
             }
         }
-        if (intersectionNode) break; // Collision found! Stop searching.
+        if (intersectionNode) break;
 
-        // --- STEP 2: Expand Backward ---
         let bwdCurrent = bwdQueue.shift();
         pagesExplored++;
         ticker.innerText = `[Page ${pagesExplored}] Backward scanning: ${bwdCurrent}...`;
@@ -114,8 +104,6 @@ async function runSolver() {
             let lower = neighbor.toLowerCase();
             if (!(lower in bwdParents)) {
                 bwdParents[lower] = bwdCurrent;
-                
-                // Did we collide with the forward search?
                 if (lower in fwdParents) {
                     intersectionNode = neighbor;
                     break;
@@ -123,7 +111,7 @@ async function runSolver() {
                 bwdQueue.push(neighbor);
             }
         }
-        if (intersectionNode) break; // Collision found! Stop searching.
+        if (intersectionNode) break;
     }
 
     if (!intersectionNode) {
@@ -138,45 +126,30 @@ async function runSolver() {
     btn.innerText = "Solve";
 }
 
-// --- Path Reconstruction & Rendering ---
-
+/* Path Reconstruction & Rendering */
 async function buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode) {
     const resultsContainer = document.getElementById('results');
     
-    // 1. Build path from Start to Intersection
     let fwdPath = [];
     let curr = intersectionNode;
     while (curr) {
         fwdPath.push(curr);
         curr = fwdParents[curr.toLowerCase()];
     }
-    fwdPath.reverse(); // Flip it so it goes Start -> Intersection
+    fwdPath.reverse(); 
 
-    // 2. Build path from Intersection to Target
     let bwdPath = [];
-    // Skip the intersection node itself since it's already at the end of the fwdPath
     curr = bwdParents[intersectionNode.toLowerCase()]; 
     while (curr) {
         bwdPath.push(curr);
         curr = bwdParents[curr.toLowerCase()];
     }
 
-    // Combine them
     const finalPath = [...fwdPath, ...bwdPath];
 
-    // Render Cards
     for (let i = 0; i < finalPath.length; i++) {
         let details = await fetchPageDetails(finalPath[i]);
-        
-        let cardHTML = `
-            <div class="card">
-                <img src="${details.image}" alt="${details.title}">
-                <div class="card-content">
-                    <h3>${details.title}</h3>
-                    <p>${details.summary}</p>
-                </div>
-            </div>
-        `;
+        let cardHTML = `<div class="card"><img src="${details.image}" alt="${details.title}"><div class="card-content"><h3>${details.title}</h3><p>${details.summary}</p></div></div>`;
         
         resultsContainer.innerHTML += cardHTML;
         if (i < finalPath.length - 1) {
