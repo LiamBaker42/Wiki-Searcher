@@ -1,152 +1,278 @@
-async function fetchLinks(pageTitle) {
-    const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=links&pllimit=500&format=json&origin=*`;
-    try {
-        const response = await fetch(url);
-        const data = await response.json();
-        const pages = data.query.pages;
-        const pageId = Object.keys(pages)[0];
-        if (!pages[pageId].links) return [];
-        return pages[pageId].links.filter(link => link.ns === 0).map(link => link.title);
-    } catch (e) { return []; }
-}
-
-async function fetchBacklinks(pageTitle) {
-    const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=linkshere&lhlimit=500&format=json&origin=*`;
-    try {
-        const response = await fetch(url);
-        const data = await response.json();
-        const pages = data.query.pages;
-        const pageId = Object.keys(pages)[0];
-        if (!pages[pageId].linkshere) return [];
-        return pages[pageId].linkshere.filter(link => link.ns === 0).map(link => link.title);
-    } catch (e) { return []; }
-}
-
-async function fetchPageDetails(pageTitle) {
-    const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=pageimages|extracts&exintro&explaintext&pithumbsize=200&format=json&origin=*`;
-    try {
-        const response = await fetch(url);
-        const data = await response.json();
-        const pages = data.query.pages;
-        const pageId = Object.keys(pages)[0];
-        const page = pages[pageId];
-        return {
-            title: page.title,
-            summary: page.extract ? page.extract.substring(0, 120) + '...' : 'No summary available.',
-            image: page.thumbnail ? page.thumbnail.source : 'https://upload.wikimedia.org/wikipedia/commons/8/80/Wikipedia-logo-v2.svg'
-        };
-    } catch (e) { return { title: pageTitle, summary: 'Error fetching details.', image: '' }; }
-}
-
-async function runSolver() {
-    const startInput = document.getElementById('start').value.trim();
-    const targetInput = document.getElementById('target').value.trim();
-    const btn = document.getElementById('solveBtn');
-    const ticker = document.getElementById('ticker');
-    const results = document.getElementById('results');
-
-    if (!startInput || !targetInput) return alert("Please enter both pages.");
-
-    btn.disabled = true;
-    btn.innerText = "Searching Both Ends...";
-    results.innerHTML = '';
-    ticker.style.display = 'block';
-
-    if (startInput.toLowerCase() === targetInput.toLowerCase()) {
-        ticker.innerText = `You started at the destination!`;
-        await buildAndRenderBidirectionalPath({}, {}, startInput);
-        btn.disabled = false;
-        btn.innerText = "Solve";
-        return;
-    }
-
-    let fwdQueue = [startInput];
-    let bwdQueue = [targetInput];
-    let fwdParents = { [startInput.toLowerCase()]: null };
-    let bwdParents = { [targetInput.toLowerCase()]: null };
-    
-    let pagesExplored = 0;
-    const MAX_PAGES = 400;
-    let intersectionNode = null;
-
-    while (fwdQueue.length > 0 && bwdQueue.length > 0 && pagesExplored < MAX_PAGES) {
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikipedia Game Solver</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --bg: #f8fafc;
+            --text: #1e293b;
+            --card-bg: #ffffff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+        h1 {
+            text-align: center;
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        p.subtitle {
+            text-align: center;
+            color: #64748b;
+            margin-bottom: 2rem;
+        }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            background: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #1d4ed8; }
+        button:disabled { background-color: #94a3b8; cursor: not-allowed; }
         
-        let fwdCurrent = fwdQueue.shift();
-        pagesExplored++;
-        ticker.innerText = `[Page ${pagesExplored}] Forward scanning: ${fwdCurrent}...`;
+        #ticker {
+            font-family: monospace;
+            background: #1e293b;
+            color: #10b981;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            display: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         
-        let fwdNeighbors = await fetchLinks(fwdCurrent);
-        for (let neighbor of fwdNeighbors) {
-            let lower = neighbor.toLowerCase();
-            if (!(lower in fwdParents)) {
-                fwdParents[lower] = fwdCurrent;
-                if (lower in bwdParents) {
-                    intersectionNode = neighbor;
-                    break;
+        .path-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .card {
+            display: flex;
+            background: var(--card-bg);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgb(0 0 0 / 0.1);
+            align-items: center;
+            padding: 1rem;
+            gap: 1.5rem;
+        }
+        .card img {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #e2e8f0;
+        }
+        .card-content h3 { margin: 0 0 0.25rem 0; }
+        .card-content p { margin: 0; color: #64748b; font-size: 0.9rem; }
+        
+        .arrow {
+            text-align: center;
+            color: var(--primary);
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>WikiRace BFS Solver</h1>
+    <p class="subtitle">Finding the shortest path between two Wikipedia articles.</p>
+
+    <div class="controls">
+        <input type="text" id="start" placeholder="Start Page" value="Milkshake">
+        <input type="text" id="target" placeholder="Target Page" value="Isaac Newton">
+        <button id="solveBtn" onclick="runSolver()">Solve</button>
+    </div>
+
+    <div id="ticker">Waiting to start...</div>
+    <div id="results" class="path-container"></div>
+
+    <script>
+        async function fetchLinks(pageTitle) {
+            const url = 'https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(pageTitle) + '&prop=links&pllimit=500&format=json&origin=*';
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const pages = data.query.pages;
+                const pageId = Object.keys(pages)[0];
+                if (!pages[pageId].links) return [];
+                return pages[pageId].links.filter(link => link.ns === 0).map(link => link.title);
+            } catch (e) { return []; }
+        }
+
+        async function fetchBacklinks(pageTitle) {
+            const url = 'https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(pageTitle) + '&prop=linkshere&lhlimit=500&format=json&origin=*';
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const pages = data.query.pages;
+                const pageId = Object.keys(pages)[0];
+                if (!pages[pageId].linkshere) return [];
+                return pages[pageId].linkshere.filter(link => link.ns === 0).map(link => link.title);
+            } catch (e) { return []; }
+        }
+
+        async function fetchPageDetails(pageTitle) {
+            const url = 'https://en.wikipedia.org/w/api.php?action=query&titles=' + encodeURIComponent(pageTitle) + '&prop=pageimages|extracts&exintro&explaintext&pithumbsize=200&format=json&origin=*';
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const pages = data.query.pages;
+                const pageId = Object.keys(pages)[0];
+                const page = pages[pageId];
+                return {
+                    title: page.title,
+                    summary: page.extract ? page.extract.substring(0, 120) + '...' : 'No summary available.',
+                    image: page.thumbnail ? page.thumbnail.source : 'https://upload.wikimedia.org/wikipedia/commons/8/80/Wikipedia-logo-v2.svg'
+                };
+            } catch (e) { return { title: pageTitle, summary: 'Error fetching details.', image: '' }; }
+        }
+
+        async function runSolver() {
+            const startInput = document.getElementById('start').value.trim();
+            const targetInput = document.getElementById('target').value.trim();
+            const btn = document.getElementById('solveBtn');
+            const ticker = document.getElementById('ticker');
+            const results = document.getElementById('results');
+
+            if (!startInput || !targetInput) return alert("Please enter both pages.");
+
+            btn.disabled = true;
+            btn.innerText = "Searching Both Ends...";
+            results.innerHTML = '';
+            ticker.style.display = 'block';
+
+            if (startInput.toLowerCase() === targetInput.toLowerCase()) {
+                ticker.innerText = 'You started at the destination!';
+                await buildAndRenderBidirectionalPath({}, {}, startInput);
+                btn.disabled = false;
+                btn.innerText = "Solve";
+                return;
+            }
+
+            let fwdQueue = [startInput];
+            let bwdQueue = [targetInput];
+            let fwdParents = { [startInput.toLowerCase()]: null };
+            let bwdParents = { [targetInput.toLowerCase()]: null };
+            
+            let pagesExplored = 0;
+            const MAX_PAGES = 400;
+            let intersectionNode = null;
+
+            while (fwdQueue.length > 0 && bwdQueue.length > 0 && pagesExplored < MAX_PAGES) {
+                
+                let fwdCurrent = fwdQueue.shift();
+                pagesExplored++;
+                ticker.innerText = '[Page ' + pagesExplored + '] Forward scanning: ' + fwdCurrent + '...';
+                
+                let fwdNeighbors = await fetchLinks(fwdCurrent);
+                for (let neighbor of fwdNeighbors) {
+                    let lower = neighbor.toLowerCase();
+                    if (!(lower in fwdParents)) {
+                        fwdParents[lower] = fwdCurrent;
+                        if (lower in bwdParents) {
+                            intersectionNode = neighbor;
+                            break;
+                        }
+                        fwdQueue.push(neighbor);
+                    }
                 }
-                fwdQueue.push(neighbor);
+                if (intersectionNode) break;
+
+                let bwdCurrent = bwdQueue.shift();
+                pagesExplored++;
+                ticker.innerText = '[Page ' + pagesExplored + '] Backward scanning: ' + bwdCurrent + '...';
+                
+                let bwdNeighbors = await fetchBacklinks(bwdCurrent);
+                for (let neighbor of bwdNeighbors) {
+                    let lower = neighbor.toLowerCase();
+                    if (!(lower in bwdParents)) {
+                        bwdParents[lower] = bwdCurrent;
+                        if (lower in fwdParents) {
+                            intersectionNode = neighbor;
+                            break;
+                        }
+                        bwdQueue.push(neighbor);
+                    }
+                }
+                if (intersectionNode) break;
+            }
+
+            if (!intersectionNode) {
+                ticker.innerText = 'Search stopped. Could not bridge the gap within ' + MAX_PAGES + ' total scans.';
+            } else {
+                ticker.innerText = 'Collision detected at "' + intersectionNode + '"! Reconstructing path...';
+                await buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode);
+                ticker.innerText = 'Success! Path connected after scanning ' + pagesExplored + ' pages.';
+            }
+
+            btn.disabled = false;
+            btn.innerText = "Solve";
+        }
+
+        async function buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode) {
+            const resultsContainer = document.getElementById('results');
+            
+            let fwdPath = [];
+            let curr = intersectionNode;
+            while (curr) {
+                fwdPath.push(curr);
+                curr = fwdParents[curr.toLowerCase()];
+            }
+            fwdPath.reverse(); 
+
+            let bwdPath = [];
+            curr = bwdParents[intersectionNode.toLowerCase()]; 
+            while (curr) {
+                bwdPath.push(curr);
+                curr = bwdParents[curr.toLowerCase()];
+            }
+
+            const finalPath = [...fwdPath, ...bwdPath];
+
+            for (let i = 0; i < finalPath.length; i++) {
+                let details = await fetchPageDetails(finalPath[i]);
+                let cardHTML = '<div class="card"><img src="' + details.image + '" alt="' + details.title + '"><div class="card-content"><h3>' + details.title + '</h3><p>' + details.summary + '</p></div></div>';
+                
+                resultsContainer.innerHTML += cardHTML;
+                if (i < finalPath.length - 1) {
+                    resultsContainer.innerHTML += '<div class="arrow">↓</div>';
+                }
             }
         }
-        if (intersectionNode) break;
-
-        let bwdCurrent = bwdQueue.shift();
-        pagesExplored++;
-        ticker.innerText = `[Page ${pagesExplored}] Backward scanning: ${bwdCurrent}...`;
-        
-        let bwdNeighbors = await fetchBacklinks(bwdCurrent);
-        for (let neighbor of bwdNeighbors) {
-            let lower = neighbor.toLowerCase();
-            if (!(lower in bwdParents)) {
-                bwdParents[lower] = bwdCurrent;
-                if (lower in fwdParents) {
-                    intersectionNode = neighbor;
-                    break;
-                }
-                bwdQueue.push(neighbor);
-            }
-        }
-        if (intersectionNode) break;
-    }
-
-    if (!intersectionNode) {
-        ticker.innerText = `Search stopped. Could not bridge the gap within ${MAX_PAGES} total scans.`;
-    } else {
-        ticker.innerText = `Collision detected at "${intersectionNode}"! Reconstructing path...`;
-        await buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode);
-        ticker.innerText = `Success! Path connected after scanning ${pagesExplored} pages.`;
-    }
-
-    btn.disabled = false;
-    btn.innerText = "Solve";
-}
-
-async function buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersectionNode) {
-    const resultsContainer = document.getElementById('results');
-    
-    let fwdPath = [];
-    let curr = intersectionNode;
-    while (curr) {
-        fwdPath.push(curr);
-        curr = fwdParents[curr.toLowerCase()];
-    }
-    fwdPath.reverse(); 
-
-    let bwdPath = [];
-    curr = bwdParents[intersectionNode.toLowerCase()]; 
-    while (curr) {
-        bwdPath.push(curr);
-        curr = bwdParents[curr.toLowerCase()];
-    }
-
-    const finalPath = [...fwdPath, ...bwdPath];
-
-    for (let i = 0; i < finalPath.length; i++) {
-        let details = await fetchPageDetails(finalPath[i]);
-        let cardHTML = `<div class="card"><img src="${details.image}" alt="${details.title}"><div class="card-content"><h3>${details.title}</h3><p>${details.summary}</p></div></div>`;
-        
-        resultsContainer.innerHTML += cardHTML;
-        if (i < finalPath.length - 1) {
-            resultsContainer.innerHTML += `<div class="arrow">↓</div>`;
-        }
-    }
-}
+    </script>
+</body>
+</html>
