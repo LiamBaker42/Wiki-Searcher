@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikipedia Game Solver</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --bg: #f8fafc;
+            --text: #1e293b;
+            --card-bg: #ffffff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem;
+            line-height: 1.6;
+        }
+        h1 {
+            text-align: center;
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        p.subtitle {
+            text-align: center;
+            color: #64748b;
+            margin-bottom: 2rem;
+        }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            background: var(--card-bg);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        input {
+            flex: 1;
+            padding: 0.75rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #1d4ed8; }
+        button:disabled { background-color: #94a3b8; cursor: not-allowed; }
+        
+        #ticker {
+            font-family: monospace;
+            background: #1e293b;
+            color: #10b981;
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            display: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .path-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .card {
+            display: flex;
+            background: var(--card-bg);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgb(0 0 0 / 0.1);
+            align-items: center;
+            padding: 1rem;
+            gap: 1.5rem;
+        }
+        .card img {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #e2e8f0;
+        }
+        .card-content h3 { margin: 0 0 0.25rem 0; }
+        .card-content p { margin: 0; color: #64748b; font-size: 0.9rem; }
+        
+        .arrow {
+            text-align: center;
+            color: var(--primary);
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>WikiRace BFS Solver</h1>
+    <p class="subtitle">Finding the shortest path between two Wikipedia articles.</p>
+
+    <div class="controls">
+        <input type="text" id="start" placeholder="Start Page (e.g., Milkshake)" value="Milkshake">
+        <input type="text" id="target" placeholder="Target Page (e.g., Isaac Newton)" value="Isaac Newton">
+        <button id="solveBtn" onclick="runSolver()">Solve</button>
+    </div>
+
+    <div id="ticker">Waiting to start...</div>
+    <div id="results" class="path-container"></div>
+
+    <script>
+        // --- API Helper Functions ---
+        
+        // Fetches outgoing links from a given Wikipedia page
+        async function fetchLinks(pageTitle) {
+            // Using pllimit=100 to keep the payload small and fast for the browser
+            const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=links&pllimit=100&format=json&origin=*`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const pages = data.query.pages;
+                const pageId = Object.keys(pages)[0];
+                
+                if (!pages[pageId].links) return [];
+                // Filter out non-article namespaces (like Talk:, User:, etc.)
+                return pages[pageId].links.filter(link => link.ns === 0).map(link => link.title);
+            } catch (e) {
+                return [];
+            }
+        }
+
+        // Fetches the summary and image for the final result cards
+        async function fetchPageDetails(pageTitle) {
+            const url = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(pageTitle)}&prop=pageimages|extracts&exintro&explaintext&pithumbsize=200&format=json&origin=*`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const pages = data.query.pages;
+                const pageId = Object.keys(pages)[0];
+                const page = pages[pageId];
+                
+                return {
+                    title: page.title,
+                    summary: page.extract ? page.extract.substring(0, 120) + '...' : 'No summary available.',
+                    image: page.thumbnail ? page.thumbnail.source : 'https://upload.wikimedia.org/wikipedia/commons/8/80/Wikipedia-logo-v2.svg'
+                };
+            } catch (e) {
+                return { title: pageTitle, summary: 'Error fetching details.', image: '' };
+            }
+        }
+
+        // --- Core BFS Algorithm ---
+        
+        async function runSolver() {
+            const startInput = document.getElementById('start').value.trim();
+            const targetInput = document.getElementById('target').value.trim();
+            const btn = document.getElementById('solveBtn');
+            const ticker = document.getElementById('ticker');
+            const results = document.getElementById('results');
+
+            if (!startInput || !targetInput) return alert("Please enter both pages.");
+
+            // UI Reset
+            btn.disabled = true;
+            btn.innerText = "Searching...";
+            results.innerHTML = '';
+            ticker.style.display = 'block';
+            ticker.innerText = `Initializing search from "${startInput}"...`;
+
+            let queue = [startInput];
+            let visited = new Set([startInput.toLowerCase()]);
+            let parentMap = {};
+            
+            // Safety limit to prevent browser from freezing on massive searches
+            let pagesExplored = 0;
+            const MAX_PAGES = 500; 
+
+            let found = false;
+
+            while (queue.length > 0 && pagesExplored < MAX_PAGES) {
+                let currentPage = queue.shift();
+                pagesExplored++;
+
+                ticker.innerText = `[Explored: ${pagesExplored}] Scanning links on: ${currentPage}...`;
+                
+                // Did we find it? (Case insensitive check)
+                if (currentPage.toLowerCase() === targetInput.toLowerCase()) {
+                    found = true;
+                    await renderPath(parentMap, startInput, currentPage);
+                    break;
+                }
+
+                // Fetch neighbors
+                let neighbors = await fetchLinks(currentPage);
+                
+                for (let neighbor of neighbors) {
+                    let neighborLower = neighbor.toLowerCase();
+                    if (!visited.has(neighborLower)) {
+                        visited.add(neighborLower);
+                        parentMap[neighbor] = currentPage;
+                        
+                        // Check immediately to save API calls
+                        if (neighborLower === targetInput.toLowerCase()) {
+                            found = true;
+                            ticker.innerText = `Target found! Reconstructing path...`;
+                            await renderPath(parentMap, startInput, neighbor);
+                            queue = []; // Break outer loop
+                            break;
+                        }
+                        queue.push(neighbor);
+                    }
+                }
+            }
+
+            if (!found) {
+                ticker.innerText = `Search stopped. Could not find a path within ${MAX_PAGES} page explorations. Try closer topics!`;
+            } else {
+                ticker.innerText = `Success! Path found after exploring ${pagesExplored} pages.`;
+            }
+
+            btn.disabled = false;
+            btn.innerText = "Solve";
+        }
+
+        // --- UI Rendering ---
+
+        async function renderPath(parentMap, start, target) {
+            const resultsContainer = document.getElementById('results');
+            let path = [];
+            let current = target;
+
+            // Backtrack
+            while (current && current.toLowerCase() !== start.toLowerCase()) {
+                path.push(current);
+                // Find the parent by checking keys case-insensitively 
+                let parentKey = Object.keys(parentMap).find(k => k.toLowerCase() === current.toLowerCase());
+                current = parentMap[parentKey];
+            }
+            path.push(start);
+            path.reverse(); // Start to Target
+
+            // Render Cards
+            for (let i = 0; i < path.length; i++) {
+                let details = await fetchPageDetails(path[i]);
+                
+                let cardHTML = `
+                    <div class="card">
+                        <img src="${details.image}" alt="${details.title}">
+                        <div class="card-content">
+                            <h3>${details.title}</h3>
+                            <p>${details.summary}</p>
+                        </div>
+                    </div>
+                `;
+                
+                resultsContainer.innerHTML += cardHTML;
+
+                // Add arrow if not the last item
+                if (i < path.length - 1) {
+                    resultsContainer.innerHTML += `<div class="arrow">↓</div>`;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
