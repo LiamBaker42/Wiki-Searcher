@@ -62,7 +62,7 @@ async function runSolver() {
 
     if (startInput.toLowerCase() === targetInput.toLowerCase()) {
         ticker.innerText = `You started at the destination!`;
-        await renderPath([startInput]);
+        await buildAndRenderBidirectionalPath({}, {}, startInput);
         btn.disabled = false;
         btn.innerText = "Solve";
         return;
@@ -164,7 +164,7 @@ async function buildAndRenderBidirectionalPath(fwdParents, bwdParents, intersect
     // Combine them
     const finalPath = [...fwdPath, ...bwdPath];
 
-    // Render Cards (Wikipedia API automatically fixes any casing issues!)
+    // Render Cards
     for (let i = 0; i < finalPath.length; i++) {
         let details = await fetchPageDetails(finalPath[i]);
         
